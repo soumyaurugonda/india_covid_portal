@@ -1,29 +1,35 @@
 const express = require("express");
-const path = require("path");
-const sqlite3 = require("sqlite3");
 const { open } = require("sqlite");
-//for password encryption
+const sqlite3 = require("sqlite3");
+const path = require("path");
 const bcrypt = require("bcrypt");
-//for jwtToken
 const jwt = require("jsonwebtoken");
-const app = express();
-app.use(express.json());
+
 const databasePath = path.join(__dirname, "covid19IndiaPortal.db");
+
+const app = express();
+
+app.use(express.json());
+
 let database = null;
 
-const initializeDnAndServer = async () => {
+const initializeDbAndServer = async () => {
   try {
-    database = await open({ filename: databasePath, driver: sqlite3.Database });
-    app.listen(3000, () => {
-      console.log(`Server is running on http://localhost:3000`);
+    database = await open({
+      filename: databasePath,
+      driver: sqlite3.Database,
     });
+
+    app.listen(3000, () =>
+      console.log("Server Running at http://localhost:3000/")
+    );
   } catch (error) {
-    console.log(`Database Error is ${error}`);
+    console.log(`DB Error: ${error.message}`);
     process.exit(1);
   }
 };
 
-initializeDnAndServer();
+initializeDbAndServer();
 
 const convertStateDbObjectToResponseObject = (dbObject) => {
   return {
@@ -33,18 +39,19 @@ const convertStateDbObjectToResponseObject = (dbObject) => {
   };
 };
 
-const convertDistrictObjectToResponseObject = (dbObject) => {
+const convertDistrictDbObjectToResponseObject = (dbObject) => {
   return {
     districtId: dbObject.district_id,
     districtName: dbObject.district_name,
     stateId: dbObject.state_id,
+    cases: dbObject.cases,
     cured: dbObject.cured,
     active: dbObject.active,
     deaths: dbObject.deaths,
   };
 };
 
-const authenticateToken = (request, response, next) => {
+function authenticateToken(request, response, next) {
   let jwtToken;
   const authHeader = request.headers["authorization"];
   if (authHeader !== undefined) {
@@ -63,39 +70,40 @@ const authenticateToken = (request, response, next) => {
       }
     });
   }
-};
+}
 
-///API 1
 app.post("/login/", async (request, response) => {
   const { username, password } = request.body;
-  const checkUserQuery = `select * from user where username = '${username}';`;
-  const userNameResponse = await database.get(checkUserQuery);
-  if (userNameResponse !== undefined) {
+  const selectUserQuery = `SELECT * FROM user WHERE username = '${username}';`;
+  const databaseUser = await database.get(selectUserQuery);
+  if (databaseUser === undefined) {
+    response.status(400);
+    response.send("Invalid user");
+  } else {
     const isPasswordMatched = await bcrypt.compare(
       password,
-      userNameResponse.password
+      databaseUser.password
     );
     if (isPasswordMatched === true) {
       const payload = {
         username: username,
       };
       const jwtToken = jwt.sign(payload, "MY_SECRET_TOKEN");
-      response.send({ jwtToken }); // Scenario 3
+      response.send({ jwtToken });
     } else {
       response.status(400);
-      response.send(`Invalid password`); // Scenario 2
+      response.send("Invalid password");
     }
-  } else {
-    response.status(400);
-    response.send(`Invalid user`); //Scenario 1
   }
 });
 
-///API 2
 app.get("/states/", authenticateToken, async (request, response) => {
-  const getStateQuery = `
-    SELECT * FROM state;`;
-  const statesArray = await database.all(getStateQuery);
+  const getStatesQuery = `
+    SELECT
+      *
+    FROM
+      state;`;
+  const statesArray = await database.all(getStatesQuery);
   response.send(
     statesArray.map((eachState) =>
       convertStateDbObjectToResponseObject(eachState)
@@ -103,53 +111,63 @@ app.get("/states/", authenticateToken, async (request, response) => {
   );
 });
 
-///APi 3
 app.get("/states/:stateId/", authenticateToken, async (request, response) => {
   const { stateId } = request.params;
   const getStateQuery = `
-    SELECT * FROM state
-    WHERE state_id=${stateId};`;
+    SELECT 
+      *
+    FROM 
+      state 
+    WHERE 
+      state_id = ${stateId};`;
   const state = await database.get(getStateQuery);
   response.send(convertStateDbObjectToResponseObject(state));
 });
 
-///API 4
-app.post("/districts/", authenticateToken, async (request, response) => {
-  const { districtName, stateId, cases, cured, active, deaths } = request.body;
-  const createDistrictQuery = `
-  insert into district(district_name,state_id,cases,cured,active,deaths)
-    values('${districtName}',${stateId},${cases},${cured},${active},${deaths});`;
-  const createDistrictQueryResponse = await database.run(createDistrictQuery);
-  response.send("District Successfully Added");
-});
-///API 5
 app.get(
   "/districts/:districtId/",
   authenticateToken,
   async (request, response) => {
     const { districtId } = request.params;
-    const getDistrictQuery = `select * from district 
-  where district_id=${districtId};`;
-    const district = await database.get(getDistrictQuery);
-    response.send(convertDistrictObjectToResponseObject(district));
+    const getDistrictsQuery = `
+    SELECT
+      *
+    FROM
+     district
+    WHERE
+      district_id = ${districtId};`;
+    const district = await database.get(getDistrictsQuery);
+    response.send(convertDistrictDbObjectToResponseObject(district));
   }
 );
 
-///API 6
+app.post("/districts/", authenticateToken, async (request, response) => {
+  const { stateId, districtName, cases, cured, active, deaths } = request.body;
+  const postDistrictQuery = `
+  INSERT INTO
+    district (state_id, district_name, cases, cured, active, deaths)
+  VALUES
+    (${stateId}, '${districtName}', ${cases}, ${cured}, ${active}, ${deaths});`;
+  await database.run(postDistrictQuery);
+  response.send("District Successfully Added");
+});
+
 app.delete(
   "/districts/:districtId/",
   authenticateToken,
   async (request, response) => {
     const { districtId } = request.params;
     const deleteDistrictQuery = `
-    DELETE FROM district 
-    WHERE district_id=${districtId};`;
+  DELETE FROM
+    district
+  WHERE
+    district_id = ${districtId} 
+  `;
     await database.run(deleteDistrictQuery);
     response.send("District Removed");
   }
 );
 
-///API 7
 app.put(
   "/districts/:districtId/",
   authenticateToken,
@@ -159,41 +177,47 @@ app.put(
       districtName,
       stateId,
       cases,
-      cures,
+      cured,
       active,
       deaths,
     } = request.body;
     const updateDistrictQuery = `
-    UPDATE district 
-    SET 
-    district_name= '${districtName}',
-    state_id='${stateId},
-    cases=${cases},
-    cured=${cured},
-    active=${active},
-    deaths=${deaths}
-    WHERE 
-     district_id=${districtId};`;
+  UPDATE
+    district
+  SET
+    district_name = '${districtName}',
+    state_id = ${stateId},
+    cases = ${cases},
+    cured = ${cured},
+    active = ${active}, 
+    deaths = ${deaths}
+  WHERE
+    district_id = ${districtId};
+  `;
+
     await database.run(updateDistrictQuery);
     response.send("District Details Updated");
   }
 );
 
-///API 8
 app.get(
   "/states/:stateId/stats/",
   authenticateToken,
   async (request, response) => {
     const { stateId } = request.params;
-    const getStatesStatsQuery = `
-    SELECT SUM(cases) as totalCases,
-    SUM(cured) as totalCured,
-    SUM(active) as totalActive,
-    SUM(deaths) as totalDeaths
-    FROM district
-    WHERE state_id=${stateId};`;
-    const stats = await database.get(getStatesStatsQuery);
+    const getStateStatsQuery = `
+    SELECT
+      SUM(cases) as totalCases,
+      SUM(cured) as totalCured,
+      SUM(active) as totalActive,
+      SUM(deaths) as totalDeaths
+    FROM
+      district
+    WHERE
+      state_id=${stateId};`;
+    const stats = await database.get(getStateStatsQuery);
     response.send(stats);
   }
 );
+
 module.exports = app;
